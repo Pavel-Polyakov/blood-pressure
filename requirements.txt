@@ -1,0 +1,5 @@
+loguru==0.5.3
+pyTelegramBotAPI==3.7.3
+requests==2.25.0
+tinydb==4.2.0
+transitions==0.8.5
