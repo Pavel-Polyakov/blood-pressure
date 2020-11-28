@@ -38,6 +38,9 @@ def deploy():
 
     sudo(' && '.join(commands))
 
+@task
+def stop():
+    sudo(f'docker stop {container_name}')
 
 @task(alias='bd')
 def build_and_deploy():
