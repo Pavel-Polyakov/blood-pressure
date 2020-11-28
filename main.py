@@ -41,6 +41,8 @@ class State(str, enum.Enum):
     NOTIFY_FORGOT = "notify_forgot"
     WAIT_FOR_MORNING_TIME = "wait_for_morning_time"
     WAIT_FOR_EVENING_TIME = "wait_for_evening_time"
+    WAIT_FOR_TZ_WHEN = "wait_for_tz_when"
+    WAIT_FOR_TZ_HISTORY = "wait_for_tz_history"
     WAIT_FOR_TZ = "wait_for_tz"
     WAIT = "wait"
     RECORD = "record"
@@ -52,15 +54,17 @@ transitions = [
     ["to_start", State.INITIAL, State.START],
     ["to_wait", '*', State.WAIT],
     ["to_wait_for_tz", [State.STOP, State.WAIT], State.WAIT_FOR_TZ],
-    ["to_wait_for_morning_time", [State.STOP, State.WAIT, State.WAIT_FOR_TZ], State.WAIT_FOR_MORNING_TIME],
+    ["to_wait_for_tz_when", [State.STOP, State.WAIT], State.WAIT_FOR_TZ_WHEN],
+    ["to_wait_for_tz_history", [State.STOP, State.WAIT], State.WAIT_FOR_TZ_HISTORY],
+    ["to_wait_for_morning_time", [State.STOP, State.WAIT, State.WAIT_FOR_TZ_WHEN], State.WAIT_FOR_MORNING_TIME],
     ["to_wait_for_evening_time", State.WAIT_FOR_MORNING_TIME, State.WAIT_FOR_EVENING_TIME],
     ["to_record", State.WAIT, State.RECORD],
     ["to_stop", '*', State.STOP],
-    ["to_history", State.WAIT, State.HISTORY],
+    ["to_history", [State.STOP, State.WAIT, State.WAIT_FOR_TZ_HISTORY], State.HISTORY],
     ["to_notify_morning", State.WAIT, State.NOTIFY_MORNING],
     ["to_notify_evening", State.WAIT, State.NOTIFY_EVENING],
     ["to_notify_forgot", State.WAIT, State.NOTIFY_FORGOT],
-    ["to_status", State.WAIT, State.STATUS]
+    ["to_status", [State.STOP, State.WAIT], State.STATUS]
 ]
 
 
@@ -178,7 +182,7 @@ class Measurement(BaseModel):
     def format(self, tz):
         dt = datetime.datetime.fromtimestamp(self.ts)
         dt_utc = pytz.utc.localize(dt)
-        return f'{self.high} на {self.low} {dt_utc.astimezone(tz.timezone).strftime("%Y-%m-%d %H:%M")}'
+        return f'{self.high} на {self.low} － ({dt_utc.astimezone(tz.timezone).strftime("%Y-%m-%d %H:%M")})'
 
     @classmethod
     def from_string(cls, data: str, timestamp: float):
@@ -223,14 +227,25 @@ class Messages:
     def starting(self):
         return """🙌 Здравствуйте! 
 Я буду вести дневник давления и напоминать про измерения утром и вечером.
-Добавить напоминания можно командой /when, а остановить — командой /stop.
-Чтобы записать измерение — отправьте сообщение в формате "120/70".
-При первой установке напоминаний я попрошу установить часовой пояс. Позже его можно поменять командой /where
+
+📝 120/70 — Записать измерение
+📆 /when — Добавить напоминания
+🛑 /stop — Остановить напоминания
+🗺 /where — Установить часовой пояс
+📊 /history — История измерений
 """
 
     @property
     def wait_for_tz(self):
-        return """🗺 Чтобы правильно установить время, скажите — где вы живёте?\nНужно отправить название города"""
+        return """🗺 Чтобы установить часовой пояс, скажите — где вы живёте?\nНужно отправить название города"""
+
+    @property
+    def wait_for_tz_when(self):
+        return """🗺 Чтобы правильно установить время напоминалок, скажите — где вы живёте?\nНужно отправить название города"""
+
+    @property
+    def wait_for_tz_history(self):
+        return """🗺 Чтобы правильно отобразить запись измерений, скажите — где вы живёте?\nНужно отправить название города"""
 
     @property
     def wait_for_morning_time(self):
@@ -250,10 +265,13 @@ class Messages:
 
     @property
     def stopped(self):
-        return "🛑 Все напоминалки остановлены. Чтобы установить ещё раз — отправьте /when"
+        return "🛑 Все напоминалки остановлены. Чтобы установить — отправьте /when"
 
     @property
     def reminders(self):
+        if not self.user.reminder_morning or not self.user.reminder_evening:
+            return self.stopped
+
         return f"Напоминалки установлены\n" \
                f"☀️ Утром в {self.user.reminder_morning.format(self.user.tz)}\n" \
                f"🌇 Вечером в {self.user.reminder_evening.format(self.user.tz)}\n" \
@@ -262,9 +280,10 @@ class Messages:
     @property
     def history(self):
         if self.user.measurements:
+            tz = self.user.tz
             sep = '\n • '
-            measurements = sep + sep.join([x.format(self.user.tz) for x in self.user.measurements[::-1]])
-            return f'📊 Результаты измерений (часовой пояс {self.user.tz}):' + measurements
+            measurements = sep + sep.join([x.format(tz) for x in self.user.measurements[::-1]])
+            return f'📊 Результаты измерений ({self.tz}):' + measurements
         else:
             return '📭 Пока что нет ни одного сохранённого измерения'
 
@@ -364,7 +383,21 @@ class UserDispatcher(Machine):
     def on_enter_WAIT_FOR_TZ(self):
         self.send(self.messages.wait_for_tz)
 
+    def on_enter_WAIT_FOR_TZ_WHEN(self):
+        self.send(self.messages.wait_for_tz_when)
+
+    def on_enter_WAIT_FOR_TZ_HISTORY(self):
+        self.send(self.messages.wait_for_tz_history)
+
+    def on_exit_WAIT_FOR_TZ_WHEN(self):
+        self.user.tz = TZ.from_city(self.message.text)
+        self.send(self.messages.thanks, self.messages.tz)
+
     def on_exit_WAIT_FOR_TZ(self):
+        self.user.tz = TZ.from_city(self.message.text)
+        self.send(self.messages.thanks, self.messages.tz)
+
+    def on_exit_WAIT_FOR_TZ_HISTORY(self):
         self.user.tz = TZ.from_city(self.message.text)
         self.send(self.messages.thanks, self.messages.tz)
 
@@ -429,14 +462,16 @@ def handle_stop(message: telebot.types.Message):
 
 @bot.message_handler(commands=['история', 'history'])
 def handle_history(message: telebot.types.Message):
-    handle(message, State.HISTORY)
+    if _get_user(message).tz is None:
+        handle(message, State.WAIT_FOR_TZ_HISTORY)
+    else:
+        handle(message, State.HISTORY)
 
 
 @bot.message_handler(commands=['когда', 'when'])
 def handle_when(message: telebot.types.Message):
     if _get_user(message).tz is None:
-        # flow of setting reminders for first time
-        handle(message, State.WAIT_FOR_TZ)
+        handle(message, State.WAIT_FOR_TZ_WHEN)
     else:
         handle(message, State.WAIT_FOR_MORNING_TIME)
 
@@ -468,11 +503,17 @@ def handle_record(message: telebot.types.Message):
 
 @bot.message_handler(func=lambda msg: _check_state(msg, State.WAIT_FOR_TZ))
 def handle_message(message: telebot.types.Message):
-    if _get_user(message).tz is None:
-        # flow of setting reminders for first time
-        handle(message, State.WAIT_FOR_MORNING_TIME)
-    else:
-        handle(message, State.WAIT)
+    handle(message, State.WAIT)
+
+
+@bot.message_handler(func=lambda msg: _check_state(msg, State.WAIT_FOR_TZ_WHEN))
+def handle_message(message: telebot.types.Message):
+    handle(message, State.WAIT_FOR_MORNING_TIME)
+
+
+@bot.message_handler(func=lambda msg: _check_state(msg, State.WAIT_FOR_TZ_HISTORY))
+def handle_message(message: telebot.types.Message):
+    handle(message, State.HISTORY)
 
 
 @bot.message_handler()
