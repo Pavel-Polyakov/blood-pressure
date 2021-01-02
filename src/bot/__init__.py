@@ -154,7 +154,12 @@ def worker():
 
                 if user.reminder_forgot and user.reminder_forgot.is_notify_needed():
                     logger.info(f'notify forgot {user}')
-                    d.UserDispatcher(user, None, bot).transit(m.State.NOTIFY_FORGOT)
+                    if user.state == m.State.STOP:
+                        logger.info(f'special case: stop timer that was set after stopping reminders')
+                        user.reminder_forgot.reset()
+                    else:
+                        d.UserDispatcher(user, None, bot).transit(m.State.NOTIFY_FORGOT)
+
                     db.table("users").upsert(user.dict(), get_user_query(user.chat_id))
 
         time.sleep(60.0 - ((time.time() - start_time) % 60.0))

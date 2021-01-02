@@ -51,6 +51,7 @@ class UserDispatcher(Machine):
     def on_enter_STOP(self):
         self.user.reminder_morning = None
         self.user.reminder_evening = None
+        self.user.reminder_forgot.reset()
         self.send(self.messages.stopped)
 
     def on_enter_HISTORY(self):
