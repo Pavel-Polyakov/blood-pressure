@@ -1,6 +1,7 @@
 import configparser
 
 from fabric.api import task, local, env, sudo, execute
+from fabric.operations import get
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -8,7 +9,9 @@ config.read('config.ini')
 env.hosts = [config['main']['host']]
 image = config['docker']['image']
 container_name = config['docker']['container_name']
+
 token = config['telegram']['token']
+token_test = config['telegram']['token_test']
 
 
 @task(alias='n')
@@ -20,6 +23,17 @@ def notify_when_task_done():
 @task
 def build():
     local(f'docker build -t {image} -f Dockerfile .')
+
+
+@task
+def run_test():
+    local(f'docker run -it --rm -e TELEGRAM_BOT_TOKEN={token_test} {image}')
+
+
+@task(alias='brt')
+def build_and_run_test():
+    execute(build)
+    execute(run_test)
 
 
 @task
@@ -38,9 +52,11 @@ def deploy():
 
     sudo(' && '.join(commands))
 
+
 @task
 def stop():
     sudo(f'docker stop {container_name}')
+
 
 @task(alias='bd')
 def build_and_deploy():
